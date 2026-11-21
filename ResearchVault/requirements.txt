@@ -1,0 +1,5 @@
+PySide6==6.12.0
+cryptography==50.0.2
+argon2-cffi==25.1.0
+Pillow==12.3.0
+pywin32>=311,<400; sys_platform == 'win32'

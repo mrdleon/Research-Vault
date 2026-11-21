@@ -1,0 +1,53 @@
+import ctypes
+import hashlib
+import os
+from pathlib import Path
+import tempfile
+from .crypto import VaultError, MAX_FILE
+
+
+def read_limited(path, maximum=MAX_FILE):
+    with open(path, 'rb') as stream:
+        data = stream.read(maximum + 1)
+    if len(data) > maximum:
+        raise VaultError('Ukuran file melebihi batas operasi.')
+    return data
+
+
+def atomic_new(path, data, guard=lambda: None):
+    """Atomic no-replace publication (hard link); never clobber an existing output."""
+    path = Path(path)
+    if path.exists():
+        raise VaultError('Tujuan sudah ada. Pilih nama file baru.')
+    fd, temporary = tempfile.mkstemp(prefix='.rv-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        guard()
+        # os.link fails if a target is concurrently created; unlike os.replace.
+        if os.name == 'nt':
+            move = ctypes.WinDLL('kernel32', use_last_error=True).MoveFileExW
+            move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+            move.restype = ctypes.c_int
+            if not move(str(temporary), str(path), 0x8):
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            os.link(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def file_hash(path):
+    with open(path, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        digest = hashlib.sha256()
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+    current = os.stat(path)
+    attrs = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    if attrs(before) != attrs(after) or attrs(after) != attrs(current):
+        raise VaultError('File berubah saat hashing. Coba lagi setelah file selesai disimpan.')
+    return digest.hexdigest()
